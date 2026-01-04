@@ -2,7 +2,8 @@ import streamlit as st
 import mysql.connector
 
 def get_connection():
-    # This reads the database info from the "Secrets" area of Streamlit Cloud
+    # This line tells the app: "Don't look at 127.0.0.1. 
+    # Look at the 'Secrets' box in my Streamlit settings instead!"
     return mysql.connector.connect(
         host=st.secrets["db_host"],
         port=int(st.secrets["db_port"]),
@@ -10,4 +11,3 @@ def get_connection():
         password=st.secrets["db_password"],
         database=st.secrets["db_name"]
     )
-    
