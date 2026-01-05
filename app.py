@@ -1,209 +1,395 @@
 import streamlit as st
 import pandas as pd
-from db.db import get_connection, get_engine
 import io
+from sqlalchemy import text
+from db.db import get_engine, get_connection
 
-# -------------------------------------------------
-# PAGE CONFIG
-# -------------------------------------------------
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
 st.set_page_config(
-    page_title="Agri Excel-like Data Entry",
+    page_title="Agri Data Entry System",
     layout="wide",
     page_icon="🌾"
 )
 
-# -------------------------------------------------
-# SESSION STATE
-# -------------------------------------------------
-if "entry_started" not in st.session_state:
-    st.session_state.entry_started = False
+engine = get_engine()
 
-if "selected_traits" not in st.session_state:
-    st.session_state.selected_traits = []
-
-# -------------------------------------------------
+# --------------------------------------------------
 # SIDEBAR
-# -------------------------------------------------
+# --------------------------------------------------
 st.sidebar.title("🌾 Navigation")
 role = st.sidebar.radio("Select Role", ["Admin", "User"])
 
-# Get Engine for Pandas operations
-engine = get_engine()
-
-# =================================================
+# ==================================================
 # ADMIN PANEL
-# =================================================
+# ==================================================
 if role == "Admin":
-    st.title("⚙️ Admin Panel")
+    st.title("⚙️ Admin Control Panel")
 
     if st.text_input("Admin Password", type="password") != "admin123":
-        st.warning("Enter admin password")
         st.stop()
 
-    tab1, tab2, tab3 = st.tabs([
-        "📤 Upload / Initialize",
-        "🛠️ Manage Treatments",
-        "📥 Download Data"
+    tabs = st.tabs([
+        "📤 Upload Excel",
+        "🧪 Treatments",
+        "📊 Traits",
+        "📋 View Data",
+        "📥 Download",
+        "💣 Danger Zone"
     ])
 
-    # ---------------- TAB 1: UPLOAD ----------------
-    with tab1:
-        st.subheader("Upload Experiment Excel (A–G + H+)")
-        uploaded = st.file_uploader("Upload Excel", type=["xlsx"])
-        if uploaded:
-            df = pd.read_excel(uploaded)
+    # --------------------------------------------------
+    # TAB 1: UPLOAD EXCEL
+    # --------------------------------------------------
+    with tabs[0]:
+        st.subheader("Upload Experiment Excel (A–G fixed, H+ traits)")
+        file = st.file_uploader("Upload Excel", type=["xlsx"])
+
+        if file:
+            df = pd.read_excel(file)
+            st.dataframe(df.head(), width="stretch")
+
             if df.shape[1] < 8:
-                st.error("Excel must have at least 8 columns")
+                st.error("Excel must contain at least A–G + trait columns")
                 st.stop()
 
-            st.dataframe(df.head(), width="stretch")
-            exp_id = str(df.iloc[0, 0])
-            traits = df.columns[7:].tolist()
-
-            if st.button("Initialize Experiment"):
+            if st.button("Initialize / Replace Experiment"):
                 conn = get_connection()
                 cur = conn.cursor()
-                try:
-                    for _, r in df.iterrows():
-                        cur.execute("""
-                            INSERT INTO experiment_metadata 
-                            (exp_id, location, year, season, replication, block, treatment)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s)
-                        """, (str(r.iloc[0]), str(r.iloc[1]), int(r.iloc[2]), 
-                              str(r.iloc[3]), int(r.iloc[4]), int(r.iloc[5]), str(r.iloc[6])))
 
-                    cur.execute("DELETE FROM experiment_traits WHERE exp_id=%s", (exp_id,))
-                    for t in traits:
-                        cur.execute("INSERT INTO experiment_traits (exp_id, trait_name) VALUES (%s,%s)", (exp_id, t))
-                    
-                    conn.commit()
-                    st.success("Experiment initialized")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                finally:
-                    conn.close()
+                # FULL RESET
+                cur.execute("DELETE FROM observation_data")
+                cur.execute("DELETE FROM experiment_traits")
+                cur.execute("DELETE FROM experiment_metadata")
 
-    # ---------------- TAB 2: MANAGE ----------------
-    with tab2:
+                exp_id = str(df.iloc[0, 0])
+                traits = df.columns[7:].tolist()
+
+                # Insert metadata (A–G)
+                for _, r in df.iterrows():
+                    cur.execute("""
+                        INSERT INTO experiment_metadata
+                        (exp_id, location, year, season, replication, block, treatment, entry_status)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,'Draft')
+                    """, tuple(r.iloc[:7]))
+
+                # Insert traits (H+)
+                for t in traits:
+                    cur.execute("""
+                        INSERT INTO experiment_traits
+                        (exp_id, trait_name, data_type, unit, is_active)
+                        VALUES (%s,%s,'number','',1)
+                    """, (exp_id, t))
+
+                conn.commit()
+                conn.close()
+                st.success("Experiment initialized successfully")
+
+    # --------------------------------------------------
+    # TAB 2: TREATMENTS
+    # --------------------------------------------------
+    with tabs[1]:
         st.subheader("Manage Treatments")
-        df_manage = pd.read_sql("SELECT id, exp_id, treatment, block, replication, entry_status, is_active FROM experiment_metadata", engine)
-        st.dataframe(df_manage, width="stretch")
 
-        st.divider()
-        tid = st.number_input("Treatment ID", step=1)
-        c1, c2, c3 = st.columns(3)
+        meta_df = pd.read_sql("SELECT * FROM experiment_metadata", engine)
+        st.dataframe(meta_df, width="stretch")
 
-        if c1.button("🔓 Reopen") or c2.button("❌ Deactivate") or c3.button("➕ Restore"):
+        st.markdown("### ➕ Add Treatment")
+        with st.form("add_treatment"):
+            exp_id = st.text_input("Experiment ID")
+            location = st.text_input("Location")
+            year = st.number_input("Year", step=1)
+            season = st.text_input("Season")
+            replication = st.number_input("Replication", step=1)
+            block = st.number_input("Block", step=1)
+            treatment = st.text_input("Treatment Name")
+            add_btn = st.form_submit_button("Add Treatment")
+
+        if add_btn:
             conn = get_connection()
             cur = conn.cursor()
-            if c1.button("🔓 Reopen"):
-                cur.execute("UPDATE experiment_metadata SET entry_status='Draft' WHERE id=%s", (tid,))
-            elif c2.button("❌ Deactivate"):
-                cur.execute("UPDATE experiment_metadata SET is_active=0 WHERE id=%s", (tid,))
-            elif c3.button("➕ Restore"):
-                cur.execute("UPDATE experiment_metadata SET is_active=1 WHERE id=%s", (tid,))
+            cur.execute("""
+                INSERT INTO experiment_metadata
+                (exp_id, location, year, season, replication, block, treatment, entry_status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,'Draft')
+            """, (exp_id, location, year, season, replication, block, treatment))
             conn.commit()
             conn.close()
-            st.rerun()
+            st.success("Treatment added")
 
-    # ---------------- TAB 3: DOWNLOAD ----------------
-    with tab3:
-        st.subheader("Download Submitted Data")
-        if st.button("Generate Excel"):
-            df_down = pd.read_sql("""
-                SELECT m.exp_id, m.location, m.year, m.season, m.replication, m.block, m.treatment,
-                       o.attribute_name, o.attribute_value
-                FROM experiment_metadata m
-                JOIN observation_data o ON m.id=o.metadata_id
-                WHERE m.entry_status='Submitted' AND m.is_active=1
-            """, engine)
-            if df_down.empty:
-                st.warning("No submitted data found")
-            else:
-                wide = df_down.pivot_table(index=["exp_id","location","year","season","replication","block","treatment"],
-                                         columns="attribute_name", values="attribute_value").reset_index()
-                output = io.BytesIO()
-                wide.to_excel(output, index=False)
-                st.download_button("⬇ Download Excel", output.getvalue(), "final_experiment_data.xlsx")
+        st.markdown("### 🔧 Reset / Delete Treatment")
+        tid = st.number_input("Treatment ID", step=1)
 
-# =================================================
-# USER PANEL
-# =================================================
-else:
-    st.title("📊 Excel-like Data Entry")
-    
-    # 1. Load active metadata using Engine
-    meta_df = pd.read_sql("SELECT * FROM experiment_metadata WHERE is_active=1", engine)
+        col1, col2 = st.columns(2)
 
-    if meta_df.empty:
-        st.warning("No active experiment available")
-        st.stop()
-
-    exp_id = meta_df.iloc[0]["exp_id"]
-    
-    # 2. Load traits
-    traits_df = pd.read_sql("SELECT trait_name FROM experiment_traits WHERE exp_id=%s", engine, params=[exp_id])
-    traits = traits_df["trait_name"].tolist()
-
-    st.subheader("Select columns (H onwards)")
-    selected_traits = st.multiselect("Traits", traits, default=st.session_state.selected_traits)
-
-    if st.button("▶ Start Entry") and selected_traits:
-        st.session_state.entry_started = True
-        st.session_state.selected_traits = selected_traits
-
-    # 3. Table Rendering
-    if st.session_state.entry_started and st.session_state.selected_traits:
-        selected_traits = st.session_state.selected_traits
-        fixed_cols = ["exp_id","location","year","season","replication","block","treatment"]
-        all_cols = fixed_cols + selected_traits
-
-        # OPTIMIZATION: Load all observation data at once to avoid loop queries
-        obs_df = pd.read_sql("SELECT metadata_id, attribute_name, attribute_value FROM observation_data", engine)
-
-        is_locked = meta_df["entry_status"].eq("Submitted").any()
-
-        with st.form("entry_form"):
-            values = {}
-            header_cols = st.columns(len(all_cols))
-            for i, c in enumerate(all_cols):
-                header_cols[i].markdown(f"**{c.upper()}**")
-
-            for _, r in meta_df.iterrows():
-                row_cols = st.columns(len(all_cols))
-                for i, c in enumerate(fixed_cols):
-                    row_cols[i].write(r[c])
-
-                for j, t in enumerate(selected_traits):
-                    idx = len(fixed_cols) + j
-                    key = f"{r['id']}|{t}"
-                    
-                    # Filter local dataframe instead of database query
-                    match = obs_df[(obs_df['metadata_id'] == r['id']) & (obs_df['attribute_name'] == t)]
-                    default = float(match.iloc[0]['attribute_value']) if not match.empty else 0.0
-
-                    values[key] = row_cols[idx].number_input(t, value=default, key=f"in_{r['id']}_{t}",
-                                                          label_visibility="collapsed", disabled=is_locked)
-
-            c1, c2 = st.columns(2)
-            save_clicked = c1.form_submit_button("💾 Save")
-            submit_clicked = c2.form_submit_button("✅ Submit")
-
-        if save_clicked or submit_clicked:
+        if col1.button("Reset Treatment Data"):
             conn = get_connection()
             cur = conn.cursor()
-            try:
-                for k, v in values.items():
-                    mid, trait = k.split("|")
-                    cur.execute("DELETE FROM observation_data WHERE metadata_id=%s AND attribute_name=%s", (int(mid), trait))
-                    cur.execute("INSERT INTO observation_data (metadata_id, attribute_name, attribute_value) VALUES (%s,%s,%s)", (int(mid), trait, float(v)))
-                
-                new_status = 'Submitted' if submit_clicked else 'Draft'
-                cur.execute("UPDATE experiment_metadata SET entry_status=%s WHERE exp_id=%s", (new_status, exp_id))
+            cur.execute("DELETE FROM observation_data WHERE metadata_id=%s", (tid,))
+            cur.execute(
+                "UPDATE experiment_metadata SET entry_status='Draft' WHERE id=%s",
+                (tid,)
+            )
+            conn.commit()
+            conn.close()
+            st.success("Treatment reset")
+
+        if col2.button("Delete Treatment"):
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM observation_data WHERE metadata_id=%s", (tid,))
+            cur.execute("DELETE FROM experiment_metadata WHERE id=%s", (tid,))
+            conn.commit()
+            conn.close()
+            st.warning("Treatment deleted")
+
+    # --------------------------------------------------
+    # TAB 3: TRAITS
+    # --------------------------------------------------
+    with tabs[2]:
+        st.subheader("Manage Traits")
+
+        traits_df = pd.read_sql("SELECT * FROM experiment_traits", engine)
+        st.dataframe(traits_df, width="stretch")
+
+        st.markdown("### ➕ Add Trait")
+        with st.form("add_trait"):
+            trait_name = st.text_input("Trait Name")
+            data_type = st.selectbox("Data Type", ["number", "text"])
+            unit = st.text_input("Unit")
+            add_trait_btn = st.form_submit_button("Add Trait")
+
+        if add_trait_btn:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO experiment_traits
+                (exp_id, trait_name, data_type, unit, is_active)
+                VALUES ((SELECT exp_id FROM experiment_metadata LIMIT 1),
+                        %s,%s,%s,1)
+            """, (trait_name, data_type, unit))
+            conn.commit()
+            conn.close()
+            st.success("Trait added")
+
+        st.markdown("### 🔁 Enable / Disable Trait")
+        trait_sel = st.selectbox("Select Trait", traits_df["trait_name"].tolist())
+
+        col1, col2 = st.columns(2)
+
+        if col1.button("Disable Trait"):
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE experiment_traits SET is_active=0 WHERE trait_name=%s",
+                (trait_sel,)
+            )
+            conn.commit()
+            conn.close()
+            st.warning(f"{trait_sel} disabled")
+
+        if col2.button("Enable Trait"):
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE experiment_traits SET is_active=1 WHERE trait_name=%s",
+                (trait_sel,)
+            )
+            conn.commit()
+            conn.close()
+            st.success(f"{trait_sel} enabled")
+
+    # --------------------------------------------------
+    # TAB 4: VIEW DATA (ADMIN)
+    # --------------------------------------------------
+    with tabs[3]:
+        st.subheader("View Saved / Submitted Data")
+
+        status = st.radio(
+            "Select Data Status",
+            ["Draft", "Submitted"],
+            horizontal=True
+        )
+
+        df = pd.read_sql(
+            text("""
+                SELECT
+                    m.exp_id, m.location, m.year, m.season,
+                    m.replication, m.block, m.treatment,
+                    o.attribute_name, o.attribute_value
+                FROM experiment_metadata m
+                LEFT JOIN observation_data o
+                    ON m.id = o.metadata_id
+                LEFT JOIN experiment_traits t
+                    ON o.attribute_name = t.trait_name
+                WHERE m.entry_status = :status
+                  AND (t.is_active = 1 OR t.is_active IS NULL)
+            """),
+            engine,
+            params={"status": status}
+        )
+
+        if df.empty:
+            st.info("No data available for this status.")
+        else:
+            wide_df = df.pivot_table(
+                index=[
+                    "exp_id", "location", "year", "season",
+                    "replication", "block", "treatment"
+                ],
+                columns="attribute_name",
+                values="attribute_value"
+            ).reset_index()
+
+            st.dataframe(wide_df, width="stretch")
+
+    # --------------------------------------------------
+    # TAB 5: DOWNLOAD
+    # --------------------------------------------------
+    with tabs[4]:
+        st.subheader("Download Submitted Data")
+
+        if st.button("Generate Excel"):
+            df = pd.read_sql("""
+                SELECT
+                    m.exp_id, m.location, m.year, m.season,
+                    m.replication, m.block, m.treatment,
+                    o.attribute_name, o.attribute_value
+                FROM experiment_metadata m
+                JOIN observation_data o ON m.id=o.metadata_id
+                JOIN experiment_traits t ON o.attribute_name=t.trait_name
+                WHERE m.entry_status='Submitted'
+                  AND t.is_active=1
+            """, engine)
+
+            if df.empty:
+                st.warning("No submitted data found.")
+            else:
+                wide = df.pivot_table(
+                    index=[
+                        "exp_id","location","year","season",
+                        "replication","block","treatment"
+                    ],
+                    columns="attribute_name",
+                    values="attribute_value"
+                ).reset_index()
+
+                buffer = io.BytesIO()
+                wide.to_excel(buffer, index=False)
+
+                st.download_button(
+                    "⬇ Download Excel",
+                    buffer.getvalue(),
+                    "submitted_experiment_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+    # --------------------------------------------------
+    # TAB 6: DANGER ZONE
+    # --------------------------------------------------
+    with tabs[5]:
+        st.subheader("⚠️ Delete Everything")
+
+        if st.checkbox("I understand this will permanently delete all data"):
+            if st.button("DELETE EVERYTHING"):
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute("DELETE FROM observation_data")
+                cur.execute("DELETE FROM experiment_traits")
+                cur.execute("DELETE FROM experiment_metadata")
                 conn.commit()
-                st.success(f"Data {new_status} Successfully!")
-                if submit_clicked:
-                    st.session_state.entry_started = False
-                    st.rerun()
-            finally:
                 conn.close()
+                st.error("All data deleted")
+
+# ==================================================
+# USER PANEL
+# ==================================================
+else:
+    st.title("📊 Excel-like Data Entry")
+
+    meta_df = pd.read_sql("SELECT * FROM experiment_metadata", engine)
+
+    if meta_df.empty:
+        st.warning("No active experiment. Contact admin.")
+        st.stop()
+
+    traits_df = pd.read_sql(
+        "SELECT trait_name FROM experiment_traits WHERE is_active=1",
+        engine
+    )
+    traits = traits_df["trait_name"].tolist()
+
+    selected_traits = st.multiselect("Select Traits (H onwards)", traits)
+
+    if not selected_traits:
+        st.info("Select traits to begin entry")
+        st.stop()
+
+    # Load existing values (CRITICAL FIX)
+    obs_df = pd.read_sql(
+        "SELECT metadata_id, attribute_name, attribute_value FROM observation_data",
+        engine
+    )
+
+    existing = {
+        (int(r.metadata_id), r.attribute_name): r.attribute_value
+        for _, r in obs_df.iterrows()
+    }
+
+    fixed_cols = [
+        "exp_id","location","year",
+        "season","replication","block","treatment"
+    ]
+    all_cols = fixed_cols + selected_traits
+
+    header = st.columns(len(all_cols))
+    for i, c in enumerate(all_cols):
+        header[i].markdown(f"**{c.upper()}**")
+
+    values = {}
+
+    with st.form("entry_form"):
+        for _, row in meta_df.iterrows():
+            cols = st.columns(len(all_cols))
+
+            for i, col in enumerate(fixed_cols):
+                cols[i].write(row[col])
+
+            for j, trait in enumerate(selected_traits):
+                idx = len(fixed_cols) + j
+                default = existing.get((int(row["id"]), trait), 0.0)
+
+                values[(row["id"], trait)] = cols[idx].number_input(
+                    trait,
+                    value=float(default),
+                    key=f"{row['id']}_{trait}",
+                    label_visibility="collapsed"
+                )
+
+        save = st.form_submit_button("💾 Save")
+        submit = st.form_submit_button("✅ Submit")
+
+    if save or submit:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        for (mid, trait), val in values.items():
+            cur.execute(
+                "DELETE FROM observation_data WHERE metadata_id=%s AND attribute_name=%s",
+                (mid, trait)
+            )
+            cur.execute("""
+                INSERT INTO observation_data
+                (metadata_id, attribute_name, attribute_value)
+                VALUES (%s,%s,%s)
+            """, (mid, trait, float(val)))
+
+        if submit:
+            cur.execute(
+                "UPDATE experiment_metadata SET entry_status='Submitted'"
+            )
+
+        conn.commit()
+        conn.close()
+        st.success("Submitted" if submit else "Saved successfully")
