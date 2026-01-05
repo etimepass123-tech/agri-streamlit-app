@@ -1,8 +1,8 @@
 import streamlit as st
-from sqlalchemy import create_engine
 import mysql.connector
+from sqlalchemy import create_engine
 
-# We keep this for cursor operations (Admin tasks)
+# METHOD 1: Standard Connector (Used for Admin tasks and saving data)
 def get_connection():
     return mysql.connector.connect(
         host=st.secrets["db_host"],
@@ -12,8 +12,9 @@ def get_connection():
         database=st.secrets["db_name"]
     )
 
-# WE ADD THIS for Pandas operations (Reading Data)
+# METHOD 2: SQLAlchemy Engine (Used for pd.read_sql to fix your error)
 def get_engine():
+    # Construct connection string
     conn_url = (
         f"mysql+mysqlconnector://{st.secrets['db_user']}:"
         f"{st.secrets['db_password']}@{st.secrets['db_host']}:"
