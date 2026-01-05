@@ -1,23 +1,25 @@
 import streamlit as st
-import mysql.connector
 from sqlalchemy import create_engine
+import mysql.connector
 
-# METHOD 1: Standard Connector (Used for Admin tasks and saving data)
-def get_connection():
-    return mysql.connector.connect(
-        host=st.secrets["db_host"],
-        port=int(st.secrets["db_port"]),
-        user=st.secrets["db_user"],
-        password=st.secrets["db_password"],
-        database=st.secrets["db_name"]
-    )
+# This pulls the info from the "Secrets" area of Streamlit Cloud
+DB_HOST = st.secrets["db_host"]
+DB_PORT = st.secrets["db_port"]
+DB_USER = st.secrets["db_user"]
+DB_PASS = st.secrets["db_password"]
+DB_NAME = st.secrets["db_name"]
 
-# METHOD 2: SQLAlchemy Engine (Used for pd.read_sql to fix your error)
 def get_engine():
-    # Construct connection string
-    conn_url = (
-        f"mysql+mysqlconnector://{st.secrets['db_user']}:"
-        f"{st.secrets['db_password']}@{st.secrets['db_host']}:"
-        f"{st.secrets['db_port']}/{st.secrets['db_name']}"
-    )
+    # Construct connection string for SQLAlchemy
+    conn_url = f"mysql+mysqlconnector://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     return create_engine(conn_url)
+
+def get_connection():
+    # Construct standard connection for Cursors
+    return mysql.connector.connect(
+        host=DB_HOST,
+        port=int(DB_PORT),
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME
+    )
