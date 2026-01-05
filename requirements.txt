@@ -1,5 +1,5 @@
 streamlit
 pandas
-mysql-connector-python
 sqlalchemy
+mysql-connector-python
 openpyxl
